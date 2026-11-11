@@ -1,0 +1,35 @@
+name: Sync From Parent
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-from-parent
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Force update main from immediate parent
+    runs-on: ubuntu-latest
+    env:
+      SYNC_WITH_PARENT_TOKEN: ${{ secrets.SYNC_WITH_PARENT_TOKEN }}
+    steps:
+      # Secrets cannot be read in a job-level `if`, so the single step is gated on the job-level env instead.
+      - name: Force update main from parent
+        if: env.SYNC_WITH_PARENT_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          parent="$(gh api "repos/${REPOSITORY}" --jq '.parent.full_name // empty')"
+          if [ -z "${parent}" ]; then
+            echo "::notice::${REPOSITORY} is not a fork; nothing to sync"
+            exit 0
+          fi
+          git init --quiet
+          git fetch "https://github.com/${parent}.git" main
+          # The push must use a PAT (not GITHUB_TOKEN) so that it triggers this repo's cascade-to-forks workflow.
+          git push --force "https://x-access-token:${SYNC_WITH_PARENT_TOKEN}@github.com/${REPOSITORY}.git" FETCH_HEAD:refs/heads/main
