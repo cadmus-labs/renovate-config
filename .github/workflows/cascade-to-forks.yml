@@ -1,0 +1,52 @@
+name: Cascade To Forks
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  list-forks:
+    name: List immediate child forks
+    runs-on: ubuntu-latest
+    outputs:
+      forks: ${{ steps.forks.outputs.forks }}
+    steps:
+      - name: List forks
+        id: forks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          # Each fork's token lives in an environment named exactly like the fork (<owner>/<repo>).
+          forks="$(gh api --paginate "repos/${REPOSITORY}/forks" --jq '.[].full_name' | jq -Rsc 'split("\n") | map(select(. != ""))')"
+          echo "forks=${forks}" >> "${GITHUB_OUTPUT}"
+
+  cascade:
+    name: Trigger sync in ${{ matrix.fork }}
+    needs: list-forks
+    if: needs.list-forks.outputs.forks != '[]'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ matrix.fork }}
+      deployment: false
+    strategy:
+      fail-fast: false
+      matrix:
+        fork: ${{ fromJSON(needs.list-forks.outputs.forks) }}
+    steps:
+      - name: Trigger sync-from-parent
+        env:
+          # Environment secret of the same name overrides the repository-level fallback.
+          GH_TOKEN: ${{ secrets.FORK_CHILDREN_SYNC_TRIGGER_TOKEN }}
+          FORK: ${{ matrix.fork }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::notice::No FORK_CHILDREN_SYNC_TRIGGER_TOKEN for ${FORK}; skipping"
+            exit 0
+          fi
+          gh workflow run sync-from-parent.yml --repo "${FORK}" --ref main
